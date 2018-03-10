@@ -21,7 +21,6 @@ Need:
 ```{r packages}
 library(tidyverse)
 library(ggmap)
-library(stringr)
 library(cowplot)
 library(viridis)
 library(geosphere)
@@ -32,39 +31,64 @@ Not sure which are the most reliable datasets to use here.
 ##Data import, cleanup, and some exploration
 
 ```{r data}
-ada.raw.data <- read_csv(file = "../data/Elevator Escalator Station Data.csv") %>% 
+ada_raw <- read_csv("../data/Elevator Escalator Station Data.csv") %>% 
   arrange(station)
-sub.location.raw.data <- read_csv(file = "../data/NYC_Transit_Subway_Entrance_And_Exit_Data.csv") %>% 
-  arrange(`Station Name`)
-colnames(sub.location.raw.data)[3] <- "station"
-colnames(sub.location.raw.data) <- colnames(sub.location.raw.data) %>% 
+subloc_raw <- read_csv("../data/NYC_Transit_Subway_Entrance_And_Exit_Data.csv") %>% 
+  arrange(`Station Name`) #%>% 
+  #mutate_all(str_to_lower)
+set.seed(2018)
+nyc311_loc <- read_csv(file = "../data/unique_nyc_2015_311.csv") %>% 
+  sample_frac(0.25, replace = FALSE)
+colnames(subloc_raw) <- colnames(subloc_raw) %>% 
   str_to_lower() %>% 
-  gsub(pattern = " ", replacement = ".")
-colnames(ada.raw.data) <- colnames(ada.raw.data) %>% 
+  gsub(pattern = " ", replacement = "_")
+colnames(ada_raw) <- colnames(ada_raw) %>% 
   str_to_lower()
+colnames(nyc311_loc) <- colnames(nyc311_loc) %>% 
+  str_to_lower()
+glimpse(ada_raw)
+glimpse(subloc_raw)
+glimpse(nyc311_loc)
 ```
+
 
 Mucking around, trying to see what I have to work with.
 
 ```{r looking_over_data}
 # What are the cols and how many missing values per col?
-sub.location.raw.data %>% 
+subloc_raw %>% 
   is.na %>% 
   as.data.frame() %>% 
   sapply(sum)
-ada.raw.data %>% 
+ada_raw %>% 
   is.na %>% 
   as.data.frame() %>% 
   sapply(sum)
-full.join.mess <- ada.raw.data %>% 
-  full_join(sub.location.raw.data, by = "station") %>% 
-  arrange(station)
-inner.join.mess <- ada.raw.data %>% 
-  inner_join(sub.location.raw.data, by = "station") %>% 
-  arrange(station)
-full.join.mess %>% 
-  filter(!(station %in% unique(inner.join.mess$station)))
-rm(ada.raw.data, full.join.mess, inner.join.mess)
+subloc_raw %>% 
+  select(line:station_longitude) %>% 
+  distinct() %>% 
+  anti_join(ada_raw, by = c("station_name" = "station"))
+subloc_bor <- subloc_raw %>% 
+  # select(line:station_longitude) %>% 
+  # distinct() %>% 
+  mutate(latitude = round(station_latitude, 2),
+         longitude = round(station_longitude, 2),
+         join_key = paste(latitude, longitude, sep = "_")) %>% 
+  left_join(nyc311_loc %>% 
+              mutate(latitude = round(latitude, 2),
+                     longitude = round(longitude, 2),
+                     join_key = paste(latitude, longitude, sep = "_")) %>% 
+              distinct(), by = "join_key")
+glimpse(subloc_bor)
+
+# after investigating, there are 27 extra rows - some of the nyc 311 locations are wrongly labeled
+
+# odd <- subloc_bor %>% 
+#  group_by(line, station_name, station_latitude, station_longitude) %>% 
+#  count() %>% 
+#  filter(n > 1)
+#test <- subloc_bor %>% 
+#  filter(station_name %in% odd$station_name & line %in% odd$line & station_latitude %in% odd$station_latitude & station_longitude %in% odd$station_longitude)
 ```
 
 The Subway Entrance and Exit data seems to be good enough for an initial analysis. Hopefully the ADA column in that dataset is reliable. Need to compare this with the other datasets collected at some point, but joining is a problem.
@@ -78,14 +102,16 @@ For now, stick with the sub.location.raw.data for the rest of the analysis.
 Map of all subway stations in this dataset:
 
 ```{r nyc_stations_map, fig.height=8, fig.width=8}
-nyc.map <- get_map(location = "New York City", maptype = "roadmap")
-ggmap(nyc.map) +
-  geom_point(data = sub.location.raw.data, aes(x = station.longitude, y = station.latitude)) +
+nyc_map <- get_map(location = "New York City")
+ggmap(nyc_map) +
+  geom_point(data = subloc_bor, aes(x = station_longitude, y = station_latitude, color = borough)) +
   ylim(40.495992, 40.915568) +  # NYC city limits latitude coordinates
   xlim(-74.257159, -73.699215) +  # NYC city limits longitude coordinates
   xlab("longitude") +
   ylab("latitude") +
-  ggtitle("All NYC Subway Stations\nin the Subway Entrance/Exit Locations Data")
+  ggtitle("All NYC Subway Stations\nin the Subway Entrance/Exit Locations Data") +
+  facet_wrap(~borough)
+# there's a couple of wrong assignments - will worry about fixing those later
 ```
 
 Notes:
@@ -95,24 +121,24 @@ Notes:
 - For now, will call any station that has at least one ADA-accessible entrance/exit "accessible", but we know that some stations are only partially accessible. For some station, different subway lines are serviced by different platforms within the same station, and not all platforms are fully accessible. This is where the elevator/escalator data joining may be useful. 
 
 ```{r ada_check}
-head(sub.location.raw.data$ada)
-sub.loc.ada.sum <- sub.location.raw.data %>% 
-  group_by(station.location) %>%  # seems to be the best unique key for stations in the dataset
-  mutate(ada.sum = sum(ada)) %>%  # which stations are ada accessible? 
-  select(division:entrance.type, ada, station.location, ada.sum) %>% 
-  unique()
+head(subloc_bor$ada)
+sub.loc.ada.sum <- subloc_bor %>% 
+  group_by(station_location) %>%  # seems to be the best unique key for stations in the dataset
+  mutate(ada_sum = sum(ada)) %>%  # which stations are ada accessible? 
+  select(division:entrance_type, ada, station_location, ada_sum) %>% 
+  distinct()
 # Entrance types:
 unique(sub.loc.ada.sum$entrance.type)
 # what types of entrances are coming up as ADA == TRUE?
 sub.loc.ada.sum %>% 
   ungroup() %>% 
-  arrange(desc(ada.sum)) %>% 
-  select(division:station, entrance.type:ada, ada.sum)
+  arrange(desc(ada_sum)) %>% 
+  select(division:station_name, entrance_type:ada, ada_sum)
 # stations with entrance.type == Stair are not ADA accessible
 sub.loc.ada.sum %>% 
   ungroup() %>% 
-  arrange(desc(station)) %>% 
-  select(division:station, entrance.type:ada, ada.sum)
+  arrange(desc(station_name)) %>% 
+  select(division:station_name, entrance_type:ada, ada_sum)
 ```
 
 Looking over the result, stations with only "Stair" entrances are not ada-accessible (ada.sum == 0), but stations with entrance types such as "Elevator" and "Escalator" have more than one ada-accessible entrance (ada.sum > 0). Will call stations with ada.sum > 0 ADA-Accessible. The total value of the ada.sum probably doesn't matter much as a stand-alone measurment. Larger stations with more entrances will have a higher ada.sum score just because of the number of entrances.
@@ -198,7 +224,7 @@ Remembered that it has latitude/longitude location info for the calls. Grabbed t
 # write_csv(nyc.311.loc, path = "unique_nyc_2015_311.csv")
 
 # this is a much smaller file than the original
-nyc.311.loc <- read_csv(file = "../data/unique_nyc_2015_311.csv")
+
 nyc.311.loc
 # locations
 nyc.311.loc %>% 
