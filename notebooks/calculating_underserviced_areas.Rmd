@@ -18,7 +18,7 @@ Need:
 - Data for station locations (longitude, latitude)
 - Some way to sample the territory of NYC (it's an odd shape)
 
-```{r packages}
+```{r packages, comment=NA}
 library(tidyverse)
 library(ggmap)
 library(cowplot)
@@ -30,14 +30,15 @@ Not sure which are the most reliable datasets to use here.
 
 ##Data import, cleanup, and some exploration
 
-```{r data}
+```{r data, comment=NA}
 ada_raw <- read_csv("../data/Elevator Escalator Station Data.csv") %>% 
   arrange(station)
 subloc_raw <- read_csv("../data/NYC_Transit_Subway_Entrance_And_Exit_Data.csv") %>% 
   arrange(`Station Name`) #%>% 
   #mutate_all(str_to_lower)
 set.seed(2018)
-nyc311_loc <- read_csv(file = "../data/unique_nyc_2015_311.csv") %>% 
+nyc311_loc <- read_csv(file = "../data/unique_nyc_2015_311.csv") %>%
+  distinct() %>% 
   sample_frac(0.25, replace = FALSE)
 colnames(subloc_raw) <- colnames(subloc_raw) %>% 
   str_to_lower() %>% 
@@ -54,8 +55,17 @@ glimpse(nyc311_loc)
 
 Mucking around, trying to see what I have to work with.
 
-```{r looking_over_data}
+```{r looking_over_data, comment=NA}
 # What are the cols and how many missing values per col?
+subloc_raw <- subloc_raw %>% 
+  replace_na(
+    list(
+      route1 = "", route2 = "", route3 = "", route4 = "", 
+      route5 = "", route6 = "", route7 = "", route8 = "", 
+      route9 = "", route10 = "", route11 = ""
+      )
+    ) %>% 
+  unite(col = routes, route1:route11, sep = "")
 subloc_raw %>% 
   is.na %>% 
   as.data.frame() %>% 
@@ -64,31 +74,36 @@ ada_raw %>%
   is.na %>% 
   as.data.frame() %>% 
   sapply(sum)
+# would help future steps to assign a borough to each station - can the ada_raw data be used? 
 subloc_raw %>% 
   select(line:station_longitude) %>% 
   distinct() %>% 
   anti_join(ada_raw, by = c("station_name" = "station"))
-subloc_bor <- subloc_raw %>% 
-  # select(line:station_longitude) %>% 
-  # distinct() %>% 
-  mutate(latitude = round(station_latitude, 2),
-         longitude = round(station_longitude, 2),
-         join_key = paste(latitude, longitude, sep = "_")) %>% 
+# not many station names match across the two datasets - would take some time to untangle - is there another way?
+test <- subloc_raw %>% 
+  select(line:station_longitude) %>% 
+  distinct() %>% 
+  mutate(join_key = paste(round(station_latitude, 2), round(station_longitude, 2), sep = "_")) %>% 
   left_join(nyc311_loc %>% 
               mutate(latitude = round(latitude, 2),
                      longitude = round(longitude, 2),
                      join_key = paste(latitude, longitude, sep = "_")) %>% 
               distinct(), by = "join_key")
+# all of the stations can be assigned a location based on the rounded NYC 311 dataset!
+subloc_bor <- subloc_raw %>% 
+  mutate(join_key = paste(round(station_latitude, 2), round(station_longitude, 2), sep = "_")) %>% 
+  left_join(nyc311_loc %>% 
+              mutate(latitude = round(latitude, 2),
+                     longitude = round(longitude, 2),
+                     join_key = paste(latitude, longitude, sep = "_")) %>% 
+              distinct(), by = "join_key") %>% 
+  # cleanup 
+  select(-join_key, -latitude, -longitude) %>% 
+  select(borough, everything())
 glimpse(subloc_bor)
 
 # after investigating, there are 27 extra rows - some of the nyc 311 locations are wrongly labeled
 
-# odd <- subloc_bor %>% 
-#  group_by(line, station_name, station_latitude, station_longitude) %>% 
-#  count() %>% 
-#  filter(n > 1)
-#test <- subloc_bor %>% 
-#  filter(station_name %in% odd$station_name & line %in% odd$line & station_latitude %in% odd$station_latitude & station_longitude %in% odd$station_longitude)
 ```
 
 The Subway Entrance and Exit data seems to be good enough for an initial analysis. Hopefully the ADA column in that dataset is reliable. Need to compare this with the other datasets collected at some point, but joining is a problem.
@@ -101,7 +116,7 @@ For now, stick with the sub.location.raw.data for the rest of the analysis.
 
 Map of all subway stations in this dataset:
 
-```{r nyc_stations_map, fig.height=8, fig.width=8}
+```{r nyc_stations_map, fig.height=8, fig.width=8, comment=NA}
 nyc_map <- get_map(location = "New York City")
 ggmap(nyc_map) +
   geom_point(data = subloc_bor, aes(x = station_longitude, y = station_latitude, color = borough)) +
@@ -111,7 +126,63 @@ ggmap(nyc_map) +
   ylab("latitude") +
   ggtitle("All NYC Subway Stations\nin the Subway Entrance/Exit Locations Data") +
   facet_wrap(~borough)
-# there's a couple of wrong assignments - will worry about fixing those later
+# there's a couple of wrong assignments - try removing them:
+subloc_bor <- subloc_bor %>% 
+  filter(!(borough == "MANHATTAN" & station_latitude < 40.7)) %>%
+  filter(!(borough == "BRONX" & station_latitude < 40.8))
+ggmap(nyc_map) +
+  geom_point(data = subloc_bor, aes(x = station_longitude, y = station_latitude, color = borough)) +
+  ylim(40.495992, 40.915568) +  # NYC city limits latitude coordinates
+  xlim(-74.257159, -73.699215) +  # NYC city limits longitude coordinates
+  xlab("longitude") +
+  ylab("latitude") +
+  ggtitle("All NYC Subway Stations\nin the Subway Entrance/Exit Locations Data") +
+  facet_wrap(~borough)
+test <- subloc_bor %>% 
+  filter(borough == "BRONX" & station_latitude < 40.8)
+ggmap(nyc_map) +
+  geom_point(data = test, aes(x = station_longitude, y = station_latitude)) +
+  ylim(40.495992, 40.915568) +
+  xlim(-74.257159, -73.699215)
+
+odd <- subloc_bor %>% 
+  select(borough:station_name) %>% 
+  distinct() %>% 
+  group_by(division, line, station_name) %>% 
+  count() %>% 
+  filter(n > 1) %>% 
+  arrange(station_name)
+test2 <- subloc_bor %>% 
+  select(borough:station_longitude) %>% 
+  distinct() %>% 
+  filter(division %in% odd$division & station_name %in% odd$station_name & line %in% odd$line) %>% 
+  arrange(station_latitude, station_longitude, borough)
+# doesn't matter if the two annotations are QUEENS and BROOKLYN - will be treated together, but mixups that involve BRONX and MANHATTAN would be helpful to fix
+test3 <- test2 %>% 
+  filter(station_latitude > 40.70442) %>% 
+  arrange(station_longitude, station_latitude, borough)
+test3.brnx.man <- test3 %>% 
+  filter(borough == "MANHATTAN" | borough == "BROND")
+test4 <- test3 %>%
+  filter(station_name %in% test3.brnx.man$station_name)
+test4 %>% 
+  select(division, line, station_name) %>% 
+  distinct()
+subloc_bor <- subloc_bor %>% 
+  filter(!(division == "IND" & line == "6 Avenue" & station_name == "East Broadway" & borough == "BROOKLYN")) %>% 
+  filter(!(division == "IRT" & line == "Jerome" & station_name == "149th St-Grand Concourse" & borough == "MANHATTAN")) %>% 
+  filter(!(division == "IRT" & line == "Pelham" & station_name == "138th St-3rd Ave" & borough == "MANHATTAN")) %>% 
+  filter(!(division == "IRT" & line == "Broadway-7th Ave" & station_name == "207th St" & borough == "BRONX")) 
+# The F train Roosevelt Island stop is both Queens and Manhattan - leave it as such
+# The Marble Hill - 225th St stop is also an odd station - leave as both Manhattan and Bronx
+ggmap(nyc_map) +
+  geom_point(data = subloc_bor, aes(x = station_longitude, y = station_latitude, color = borough)) +
+  ylim(40.495992, 40.915568) +  # NYC city limits latitude coordinates
+  xlim(-74.257159, -73.699215) +  # NYC city limits longitude coordinates
+  xlab("longitude") +
+  ylab("latitude") +
+  ggtitle("All NYC Subway Stations\nin the Subway Entrance/Exit Locations Data") +
+  facet_wrap(~borough)
 ```
 
 Notes:
@@ -120,147 +191,89 @@ Notes:
 - Station names in the station column are NOT unique (multiple 103rd St, etc) in the entrance/exit data, but station location may be a unique and consistent handle to grab all the entrances/exits associated with a station
 - For now, will call any station that has at least one ADA-accessible entrance/exit "accessible", but we know that some stations are only partially accessible. For some station, different subway lines are serviced by different platforms within the same station, and not all platforms are fully accessible. This is where the elevator/escalator data joining may be useful. 
 
-```{r ada_check}
-head(subloc_bor$ada)
-sub.loc.ada.sum <- subloc_bor %>% 
-  group_by(station_location) %>%  # seems to be the best unique key for stations in the dataset
-  mutate(ada_sum = sum(ada)) %>%  # which stations are ada accessible? 
-  select(division:entrance_type, ada, station_location, ada_sum) %>% 
-  distinct()
-# Entrance types:
-unique(sub.loc.ada.sum$entrance.type)
-# what types of entrances are coming up as ADA == TRUE?
-sub.loc.ada.sum %>% 
-  ungroup() %>% 
-  arrange(desc(ada_sum)) %>% 
-  select(division:station_name, entrance_type:ada, ada_sum)
-# stations with entrance.type == Stair are not ADA accessible
-sub.loc.ada.sum %>% 
-  ungroup() %>% 
-  arrange(desc(station_name)) %>% 
-  select(division:station_name, entrance_type:ada, ada_sum)
+```{r ada_check, comment=NA}
+# some info about entrances
+subloc_bor %>% 
+  ggplot(aes(x = entrance_type, fill = ada)) +
+  geom_bar() +
+  xlab("Entrance Type")
+# same scale
+subloc_bor %>% 
+  ggplot(aes(x = entrance_type, fill = ada)) +
+  geom_bar(position = "fill") +
+  xlab("Entrance Type") +
+  ylab("Proportion of Entrance that is ADA-Accessible")
 ```
 
-Looking over the result, stations with only "Stair" entrances are not ada-accessible (ada.sum == 0), but stations with entrance types such as "Elevator" and "Escalator" have more than one ada-accessible entrance (ada.sum > 0). Will call stations with ada.sum > 0 ADA-Accessible. The total value of the ada.sum probably doesn't matter much as a stand-alone measurment. Larger stations with more entrances will have a higher ada.sum score just because of the number of entrances.
+According to the description of the variables in this dataset, `ADA == TRUE` indicates that the station is ADA-Accessible, but not necessarily if that entrance is
 
-```{r, fig.height=8, fig.width=8}
-sub.loc.ada.unique <- sub.loc.ada.sum %>% 
-  select(division:route11, station.location:ada.sum) %>% 
-  unique() %>% 
-  ungroup() %>% 
-  arrange(ada.sum, station, line) 
-# Probably don't need to keep dragging the route information around, but who knows
-sub.loc.ada.annot <- sub.loc.ada.unique %>% 
-  # stations with ada.sum == 0 assigned not ada-accessible label
-  filter(ada.sum == 0) %>% 
-  mutate(ada.class = "not.ada") %>% 
-  bind_rows(
-    # stations with ada.sum > 0 assigned ada-certified/accessible label
-    sub.loc.ada.unique %>% 
-      filter(ada.sum > 0) %>% 
-      mutate(ada.class = "ada.cert")
-    ) %>% 
-  arrange(station)
-sub.loc.ada.annot %>% 
-  ggplot(aes(x = station.longitude, y = station.latitude, color = ada.class)) +
-  geom_point(size = 2, alpha = 0.5) +
-  coord_quickmap() +
-  xlab("Station Longitude") +
-  ylab("Station Latitude") +
-  ggtitle("NYC Subway Stations\nRed = ADA-Accessible, Blue = Not Accessible")
-ggmap(nyc.map) +
+```{r, fig.height=8, fig.width=8, comment=NA}
+ggmap(nyc_map) +
   geom_point(
-    data = sub.loc.ada.annot, 
-    aes(x = station.longitude, y = station.latitude, color = ada.class),
-    size = 3,
+    data = subloc_bor, 
+    aes(x = station_longitude, y = station_latitude, color = ada),
+    size = 1.5,
     alpha = 0.5) +
   ylim(40.55, 40.915568) +  # NYC city limits latitude coordinates
   xlim(-74.1, -73.699215) +  # NYC city limits longitude coordinates
   xlab("longitude") +
   ylab("latitude") +
   ggtitle("All NYC Subway Stations\nIn the Subway Entrance/Exit Locations Dataset\nColor by Accessibility")
+# this data is missing the new Q-line information 
 ```
 
 ##Get (long,lat) pair locations from all over NYC
 
 Now the next questions is how do I "sample" points from the area of NYC? 
 
-The NYC map shapefile might be useful? 
-
-Borough boundary shapefile from: http://www1.nyc.gov/site/planning/data-maps/open-data/districts-download-metadata.page
-
-NYC city limits? (same source as above)
-
-West Longitude: -74.257159
-East Longitude: -73.699215
-North Latitude: 40.915568
-South Latitude: 40.495992
-
-
-```{r, eval = FALSE}
-library(rgdal)
-nyc.shapefile <- readOGR(dsn = "../data/nybb_17c/nybb.shp")
-nyc.map.df <- fortify(nyc.shapefile)
-nyc.shapefile.map <- ggplot() +
-  geom_path(
-    data = nyc.map.df, aes(x = long, y = lat, group = group), size = 0.2
-    ) 
-```
-
-The latitude and longitude look like they're in different units from what I'm used to. Not sure how to make use of this. Leaving in, in case someone else might find it useful.
-
-
 I've worked a little bit with the NYC 311 call dataset before. Source: https://nycopendata.socrata.com/Social-Services/311-Service-Requests-from-2010-to-Present/erm2-nwe9
 
 Remembered that it has latitude/longitude location info for the calls. Grabbed the locations from the 2015 NYC 311 calls data - use as random sample?
 
-```{r nyc_locations, fig.height=8, fig.width=8}
-# for the full locations file: 
-# nyc.311.loc <- read_csv(file = "../data/nyc_311_2015_locations.csv") %>% 
-#  filter(Borough == "BROOKLYN" | Borough == "BRONX" | Borough == "MANHATTAN" | Borough == "QUEENS") %>% 
-#  unique() %>%  # a lot of calls come from an identical lat/long
-#  filter(Longitude > -78.0)  # there's one odd point out
-# too many points to just plot, but here's a density plot:
-# write_csv(nyc.311.loc, path = "unique_nyc_2015_311.csv")
-
-# this is a much smaller file than the original
-
-nyc.311.loc
-# locations
-nyc.311.loc %>% 
-  ggplot(aes(x = Longitude, y = Latitude)) +
-  geom_bin2d(bins = 300) +
-  scale_fill_viridis(option = "B") +
+```{r nyc_locations, fig.height=8, fig.width=8, comment=NA}
+nyc311_loc %>% 
+  ggplot(aes(x = longitude, y = latitude)) +
+  geom_point(alpha = 0.2, size = 0.25) +
   coord_quickmap() +
   ggtitle("Locations in the 2015 NYC 311 Calls Dataset")
-# can do a geom_point map with all points, but it takes a long time
-# uncomment if you want to see:
-#nyc.311.loc %>% 
-#  ggplot(aes(x = Longitude, y = Latitude)) +
-#  geom_point(alpha = 0.2, size = 0.25) +
-#  coord_quickmap()
 ```
 
 Not bad. Empty areas are parks probably, should be okay to not include those.
 
-```{r more_cleanup}
+```{r more_cleanup, comment=NA}
 # create unique handle using station name, division, and line columns
-sub.loc.ada.annot <- sub.loc.ada.annot %>% 
-  mutate(station.id = paste(station, division, line, sep = " / ")) 
-sub.loc.ada.annot %>% 
-  group_by(station.id) %>% 
+subloc_bor <- subloc_bor %>% 
+  mutate(station_id = paste(division, line, station_name, sep = " / ")) %>% 
+  select(borough, station_id, everything())
+subloc_sml <- subloc_bor %>% 
+  select(station_id, borough:routes, ada) %>% 
+  distinct()
+glimpse(subloc_sml)
+not.uni <- subloc_sml %>% 
+  group_by(station_id) %>% 
   count() %>% 
   filter(n > 1)
+subloc_sml_prob <- subloc_sml %>% 
+  filter(station_id %in% not.uni$station_id) %>% 
+  arrange(station_id)
 # there's some dublicate stations still, must have had several station locations associated with those
-sub.loc.ada.annot <- sub.loc.ada.annot %>% 
-  group_by(station.id) %>% 
-  mutate(avg.lat = mean(station.latitude)) %>% 
-  mutate(avg.long = mean(station.longitude)) %>% 
-  select(station.id, division:station, avg.lat:avg.long, ada.class) %>% 
+subloc_sml <- subloc_sml %>% 
+  group_by(station_id) %>% 
+  mutate(avg_lat = mean(station_latitude)) %>% 
+  mutate(avg_long = mean(station_longitude)) %>% 
+  select(station_id:borough, avg_lat:avg_long, routes, ada) %>% 
   ungroup() %>% 
-  unique()
-nrow(sub.loc.ada.annot)
-length(sub.loc.ada.annot$station.id)
+  distinct()
+nrow(subloc_sml)
+length(subloc_sml$station_id)
+ggmap(nyc_map) +
+  geom_point(data = subloc_sml, aes(x = avg_long, y = avg_lat, color = borough)) +
+  ylim(40.495992, 40.915568) +  # NYC city limits latitude coordinates
+  xlim(-74.257159, -73.699215) +  # NYC city limits longitude coordinates
+  xlab("longitude") +
+  ylab("latitude") +
+  ggtitle("All NYC Subway Stations\nin the Subway Entrance/Exit Locations Data") +
+  facet_wrap(~borough)
 ```
 
 There's still some duplicates in the stations that have slightly different route assignments, but similar location. I'm going to leave them in for now, not sure what to do with them.
@@ -269,36 +282,36 @@ There's still some duplicates in the stations that have slightly different route
 
 Small-scale test on a tiny portion of the subway stations and the 311 locations:
 
-```{r small_scale_test}
+```{r small_scale_test, comment=NA}
 # small scale test
 # pick 10 locations in NYC and find the distance from that point to 5 stations in the city
-loc.test <- nyc.311.loc %>% 
-  slice(1:10)
-t1 <- rbind(sub.loc.ada.annot$station.id, sub.loc.ada.annot$station.id)
+loc_test <- nyc311_loc %>% 
+  sample_n(10, replace = FALSE)
+t1 <- rbind(subloc_sml$station_id, subloc_sml$station_id)
 t2 <- as.data.frame(rbind(t1, t1, t1, t1, t1), stringsAsFactors = FALSE)
 colnames(t2) <- paste("stat", 1:ncol(t2), sep = "")
 t3 <- t2 %>% select(1:5)
 t3
 
-dist.test <- bind_cols(loc.test, t3) %>%
-  gather(key = "station.num", value = "station.id", 4:8) %>% 
+dist_test <- bind_cols(loc_test, t3) %>%
+  gather(key = "station.num", value = "station_id", 4:8) %>% 
   arrange(station.num)
 # each of the 10 (long,lat) points is now paired with each of the 5 stations selected
-dist.test
+dist_test
 # link the station.id to a (long,lat) pair for that station: 
-dist.test.w.stat.loc <- dist.test %>% 
-  inner_join(sub.loc.ada.annot, by = "station.id")
+dist_test_w_stat_loc <- dist_test %>% 
+  inner_join(subloc_sml, by = "station_id")
 # now calculate distance between point and the station using the geosphere package:
-dist.test.res <- dist.test.w.stat.loc  %>% 
+dist.test.res <- dist_test_w_stat_loc  %>% 
   mutate(
     dist.to.stat = distGeo(
       # p1 = NYC 311 location
-      p1 = as.matrix(dist.test.w.stat.loc %>% select(Longitude, Latitude)), 
+      p1 = as.matrix(dist_test_w_stat_loc %>% select(longitude, latitude)), 
       # p2 = subway station location
-      p2 = as.matrix(dist.test.w.stat.loc  %>% select(avg.long, avg.lat))
+      p2 = as.matrix(dist_test_w_stat_loc  %>% select(avg_long, avg_lat))
       ) * 0.000621371  # convert meters to miles
     ) %>% 
-  mutate(loc.id = paste(Borough, Latitude, Longitude, sep = " / "))
+  mutate(loc.id = paste(borough.y, latitude, longitude, sep = " / "))
 ```
 
 ###Note: the distances are based on direct distance from point to point
@@ -308,17 +321,17 @@ To do:
 
 What's the distance from the NYC 311 point to the closest station (out of the 5):
 
-```{r, fig.height=8, fig.width=8}
+```{r, fig.height=8, fig.width=8, comment=NA}
 dim(dist.test.res)
 dist.test.nearest <- dist.test.res %>% 
   group_by(loc.id) %>% 
   summarize(nearest.stat = min(dist.to.stat)) %>% 
   ungroup() %>% 
-  inner_join((dist.test.res %>% select(Longitude, Latitude, loc.id)), by = "loc.id") %>% 
+  inner_join((dist.test.res %>% select(longitude, latitude, loc.id)), by = "loc.id") %>% 
   unique()
 dim(dist.test.nearest)
-ggmap(nyc.map) +
-  geom_point(data = dist.test.nearest, aes(x = Longitude, y = Latitude, color = nearest.stat), size = 3) +
+ggmap(nyc_map) +
+  geom_point(data = dist.test.nearest, aes(x = longitude, y = latitude, color = nearest.stat), size = 3) +
   scale_color_viridis(option = "B")  +
   ylim(40.55, 40.915568) +  # NYC city limits latitude coordinates
   xlim(-74.1, -73.699215) +  # NYC city limits longitude coordinates
@@ -337,148 +350,132 @@ Test run with a small fraction of the data seems to have worked, now to tackle t
 
 I exported the distance to any nearest subway station to any point and the distance to the nearest ada subway station into csv files. They're imported in the next chunk.
 
-```{r full_dist_calc, eval = FALSE}
-nrow(nyc.311.loc)
-# need to duplicate the station.id row that many times
-stat.df <- as.data.frame(t1, stringsAsFactors = FALSE)
-colnames(stat.df) <- paste("stat", 1:ncol(stat.df), sep = "")
-# full df with all stations with enough rows for the nyc.311.loc df
-stat.df.full <- stat.df[rep(seq_len(nrow(stat.df)), (nrow(nyc.311.loc) / 2)), ]
-dist.full <- bind_cols(nyc.311.loc, stat.df.full)
-# need to use my work computer to get through this step, takes up too much RAM
-dist.full.t2 <- dist.full %>%
-  gather(key = "station.num", value = "station.id", 4:ncol(dist.full)) %>% 
-  arrange(station.num)
-dist.full.w.stat.loc <- dist.full.t2 %>% 
-  inner_join(sub.loc.ada.annot, by = "station.id")
-rm(dist.full, dist.full.t2, stat.df.full)  # remove some monster variables
-gc()  # get some memory back
-dist.full.res <- dist.full.w.stat.loc  %>% 
+```{r full_dist_calc, comment=NA}
+glimpse(nyc311_loc)
+glimpse(subloc_sml)
+nyc311_loc <- nyc311_loc %>% 
+  mutate(
+    borough = ifelse(
+      borough == "MANHATTAN", "MANHATTAN",
+      ifelse(
+        borough == "BRONX", "BRONX", 
+        ifelse(
+          borough == "BROOKLYN", "BROOKLYN_QUEENS", "BROOKLYN_QUEENS"
+          )
+        )
+      )
+    )
+subloc_sml <- subloc_sml %>% 
+  mutate(
+    borough = ifelse(
+      borough == "MANHATTAN", "MANHATTAN",
+      ifelse(
+        borough == "BRONX", "BRONX", 
+        ifelse(
+          borough == "BROOKLYN", "BROOKLYN_QUEENS", "BROOKLYN_QUEENS"
+          )
+        )
+      )
+    )
+set.seed(2001)
+test <- nyc311_loc %>% 
+  sample_frac(0.001, replace = FALSE) %>% 
+  full_join(subloc_sml, by = "borough") 
+distances <- test %>% 
   mutate(
     dist.to.stat = distGeo(
       # p1 = NYC 311 location
-      p1 = as.matrix(dist.full.w.stat.loc %>% select(Longitude, Latitude)), 
+      p1 = as.matrix(test %>% select(longitude, latitude)), 
       # p2 = subway station location
-      p2 = as.matrix(dist.full.w.stat.loc  %>% select(avg.long, avg.lat))
+      p2 = as.matrix(test %>% select(avg_long, avg_lat))
       ) * 0.000621371  # convert meters to miles
     ) %>% 
-  mutate(loc.id = paste(Borough, Latitude, Longitude, sep = " / "))
-# freeing up memory again
-rm(dist.test.w.stat.loc)
-gc()
-dim(dist.full.res)
-# dim: 192529530 x 13
-dist.full.nearest <- dist.full.res %>% 
-  group_by(loc.id) %>% 
+  mutate(loc_id = paste(borough, latitude, longitude, sep = " / "))
+min.distance <- distances %>% 
+  group_by(loc_id) %>% 
   summarize(nearest.stat = min(dist.to.stat)) %>% 
   ungroup() %>% 
-  inner_join((dist.full.res %>% select(Longitude, Latitude, loc.id)), by = "loc.id") %>% 
+  inner_join((distances %>% select(longitude, latitude, loc_id)), by = "loc_id") %>% 
   unique()
-# write_csv(dist.full.nearest, path = "dist_to_any_nearest_station_nyc311.csv")
-dist.ada.nearest <- dist.full.res %>% 
-  filter(ada.class == "ada.cert") %>% 
-  group_by(loc.id) %>% 
+test2 <- nyc311_loc %>% 
+  full_join(subloc_sml, by = "borough") 
+distances.full <- test2 %>% 
+  mutate(
+    dist.to.stat = distGeo(
+      # p1 = NYC 311 location
+      p1 = as.matrix(test2 %>% select(longitude, latitude)), 
+      # p2 = subway station location
+      p2 = as.matrix(test2 %>% select(avg_long, avg_lat))
+      ) * 0.000621371  # convert meters to miles
+    ) %>% 
+  mutate(loc_id = paste(borough, latitude, longitude, sep = " / "))
+all.min.distance <- distances.full %>% 
+  group_by(loc_id) %>% 
   summarize(nearest.stat = min(dist.to.stat)) %>% 
   ungroup() %>% 
-  inner_join((dist.full.res %>% select(Longitude, Latitude, loc.id)), by = "loc.id") %>% 
+  inner_join((distances.full %>% select(longitude, latitude, loc_id)), by = "loc_id") %>% 
   unique()
-# write_csv(dist.ada.nearest, path = "dist_to_nearest_ada_station_nyc311.csv")
-rm(dist.full.res)
-gc()
-```
-
-##Import of the resulting csv files (to avoid evaluating that chunk above again):
-
-```{r result_csv_import}
-dist.full.nearest <- read_csv(file = "../data/dist_to_any_nearest_station_nyc311.csv")
-dist.ada.nearest <- read_csv(file = "../data/dist_to_nearest_ada_station_nyc311.csv")
+ada.min.distance <- distances.full %>% 
+  filter(ada) %>% 
+  group_by(loc_id) %>% 
+  summarize(nearest.ada.stat = min(dist.to.stat)) %>% 
+  ungroup() %>% 
+  inner_join((distances.full %>% select(longitude, latitude, loc_id)), by = "loc_id") %>% 
+  unique()
 ```
 
 ####Plots of the results
 
 Distance to any type of station from a particular point in NYC: 
 
-```{r plot_any_dist_calc, fig.height=8, fig.width=8}
-dist.full.nearest %>% 
-  ggplot(aes(x = Longitude, y = Latitude, color = nearest.stat)) +
-  geom_point(size = 0.2) +
-  scale_color_viridis(option = "B") +
-  theme(panel.background = element_rect(fill = 'grey50')) +
-  coord_quickmap() +
-  ggtitle("Direct distance to any nearest subway station from point in NYC")
-# try to lower the alpha setting in case of overplotting
-dist.full.nearest %>% 
-  ggplot(aes(x = Longitude, y = Latitude, color = nearest.stat)) +
-  geom_point(size = 0.25, alpha = 0.2) +
-  scale_color_viridis(option = "B") +
-  theme(panel.background = element_rect(fill = 'grey50')) +
-  coord_quickmap() +
-  ggtitle("Direct distance to any nearest subway station from point in NYC")
-ggmap(nyc.map) +
-  geom_point(data = dist.full.nearest, aes(x = Longitude, y = Latitude, color = nearest.stat), size = 0.2) +
-  scale_color_viridis(option = "B")  +
-  ylim(40.55, 40.915568) +  # NYC city limits latitude coordinates
-  xlim(-74.1, -73.699215) +  # NYC city limits longitude coordinates
-  xlab("longitude") +
-  ylab("latitude") +
-  ggtitle("Direct distance to any nearest subway station from point in NYC")
-```
-
-Uh oh, there seems to be an overlap problem. Wonder if the issue is with the 311 locations or with the Google Maps map from ggmap.
-
-```{r plot_ada_dist_calc, fig.height=8, fig.width=8}
-dist.ada.nearest %>% 
-  ggplot(aes(x = Longitude, y = Latitude, color = nearest.stat)) +
-  geom_point(size = 0.2) +
-  scale_color_viridis(option = "B") +
-  theme(panel.background = element_rect(fill = 'grey50')) +
-  coord_quickmap() +
-  ggtitle("Direct distance to nearest ADA-accessible subway station from point in NYC")
-
-dist.ada.nearest %>% 
-  ggplot(aes(x = Longitude, y = Latitude, color = nearest.stat)) +
+```{r plot_any_dist_calc, fig.height=8, fig.width=8, comment=NA}
+all.min.distance %>% 
+  ggplot(aes(x = longitude, y = latitude, color = nearest.stat)) +
   geom_point(size = 0.2, alpha = 0.2) +
   scale_color_viridis(option = "B") +
   theme(panel.background = element_rect(fill = 'grey50')) +
   coord_quickmap() +
-  ggtitle("Direct distance to nearest ADA-accessible subway station from point in NYC")
-
-ggmap(nyc.map) +
-  geom_point(data = dist.ada.nearest, aes(x = Longitude, y = Latitude, color = nearest.stat), size = 0.2) +
+  ggtitle("Direct distance to any nearest subway station from point in NYC")
+ada.min.distance %>% 
+  ggplot(aes(x = longitude, y = latitude, color = nearest.ada.stat)) +
+  geom_point(size = 0.25, alpha = 0.2) +
+  scale_color_viridis(option = "B") +
+  theme(panel.background = element_rect(fill = 'grey50')) +
+  coord_quickmap() +
+  ggtitle("Direct distance to nearest ADA-Accessible subway station from point in NYC")
+ggmap(nyc_map) +
+  geom_point(data = all.min.distance, aes(x = longitude + 0.002, y = latitude - 0.002, color = nearest.stat), size = 0.4, alpha = 0.5) +
   scale_color_viridis(option = "B")  +
   ylim(40.55, 40.915568) +  # NYC city limits latitude coordinates
   xlim(-74.1, -73.699215) +  # NYC city limits longitude coordinates
   xlab("longitude") +
   ylab("latitude") +
-  ggtitle("Direct distance to nearest ADA-accessible subway station from point in NYC")
-# the overlap is again a little bit off, but it gives you an idea of locations
+  ggtitle("Direct distance to any nearest subway station from point in NYC")
 ```
+
 
 Unsurprisingly, some areas are just far from any subway stations and that carries over into what areas are far from ADA stations. 
 
-```{r combining_distances}
-colnames(dist.full.nearest)[2:4] <- c("near.any.stat", "any.long", "any.lat")
-colnames(dist.ada.nearest)[2:4] <- c("near.ada.stat", "ada.long", "ada.lat")
-dist.combo <- dist.full.nearest %>% 
-  full_join(dist.ada.nearest, by = "loc.id")
+```{r combining_distances, comment=NA}
+dist.combo <- all.min.distance %>% 
+  full_join(ada.min.distance %>% select(-longitude, -latitude), by = "loc_id") %>% 
+  select(loc_id, longitude:latitude, everything())
+glimpse(dist.combo)
 # sanity checks for joining:
-sapply(dist.full.nearest, anyNA)
-sapply(dist.ada.nearest, anyNA)
+sapply(all.min.distance, anyNA)
+sapply(ada.min.distance, anyNA)
 sapply(dist.combo, anyNA)
-all.equal(dist.combo$any.lat, dist.combo$ada.lat)
-all.equal(dist.combo$any.long, dist.combo$ada.long)
 # joining seems ok
 dist.combo <- dist.combo %>% 
-  select(loc.id, any.long, any.lat, near.any.stat, near.ada.stat) %>% 
   # normalize by subtraction
-  mutate(any.vs.ada.dist = near.ada.stat - near.any.stat) %>% 
+  mutate(any.vs.ada.dist = nearest.ada.stat - nearest.stat) %>% 
   # normalize by division
-  mutate(any.vs.ada.ratio = near.ada.stat / near.any.stat)
+  mutate(any.vs.ada.ratio = nearest.ada.stat / nearest.stat)
 ```
 
 Histogram of the distances:
 
-```{r, fig.height=4, fig.width=8}
+```{r, fig.height=4, fig.width=8, comment=NA}
 dist.combo %>% 
   ggplot(aes(x = any.vs.ada.dist)) +
   geom_histogram() +
@@ -500,40 +497,38 @@ dist.combo %>%
 
 Maps of the normalized distances to ADA-Accessible stations:
   
-```{r norm_subtract_viz, fig.width=8, fig.height=8}
+```{r norm_subtract_viz, fig.width=8, fig.height=8, comment=NA}
 ### subtraction normalization
-dist.to.ada.stat.subnorm.plot <-dist.combo %>% 
-  ggplot(aes(x = any.long, y = any.lat, color = any.vs.ada.dist)) +
+(dist.to.ada.stat.subnorm.plot <- dist.combo %>% 
+  ggplot(aes(x = longitude, y = latitude, color = any.vs.ada.dist)) +
   geom_point(size = 0.1) +
   scale_color_viridis(option = "B") +
   theme(panel.background = element_rect(fill = 'grey50')) +
   coord_quickmap() +
   ggtitle("Direct distance to nearest ADA-accessible subway station from point in NYC\nNormalized to distance to nearest any kind of subway station (subtraction)") +
   xlab("Longitude") +
-  ylab("Latitude")
-dist.to.ada.stat.subnorm.plot
+  ylab("Latitude"))
 #save_plot(filename = "dist_to_ada_station_subnorm_plot.png", dist.to.ada.stat.subnorm.plot, base_height = 8, base_width = 8)
 
-dist.to.ada.stat.subnorm.alpha.plot <- dist.combo %>% 
-  ggplot(aes(x = any.long, y = any.lat, color = any.vs.ada.dist)) +
+(dist.to.ada.stat.subnorm.alpha.plot <- dist.combo %>% 
+  ggplot(aes(x = longitude, y = latitude, color = any.vs.ada.dist)) +
   geom_point(size = 0.2, alpha = 0.2) +
   scale_color_viridis(option = "B") +
   theme(panel.background = element_rect(fill = 'grey50')) +
   coord_quickmap() +
   ggtitle("Direct distance to nearest ADA-accessible subway station from point in NYC\nNormalized to distance to nearest any kind of subway station (subtraction)") +
   xlab("Longitude") +
-  ylab("Latitude")
-dist.to.ada.stat.subnorm.alpha.plot
+  ylab("Latitude"))
 #save_plot(filename = "dist_to_ada_station_subnorm_altplot.png", dist.to.ada.stat.subnorm.alpha.plot, base_height = 8, base_width = 8)
 ```
 
 
 What are the rough locations under-serviced? Google map can help here, even though it's not perfect.
 
-```{r dist_sub_map, fig.width=8, fig.height=8}
-ggmap(nyc.map) +
-  geom_point(data = (dist.combo %>% filter(any.vs.ada.dist < 1)), aes(x = any.long, y = any.lat, color = any.vs.ada.dist), size = 0.2) +
-  scale_color_viridis(option = "B", end = 0.5)  +
+```{r dist_sub_map, fig.width=8, fig.height=8, comment=NA}
+ggmap(nyc_map) +
+  geom_point(data = dist.combo, aes(x = longitude + 0.002, y = latitude - 0.002, color = any.vs.ada.dist), size = 0.2) +
+  scale_color_viridis(option = "B")  +
   ylim(40.55, 40.915568) +  # NYC city limits latitude coordinates
   xlim(-74.1, -73.699215) +  # NYC city limits longitude coordinates
   xlab("Longitude") +
@@ -546,12 +541,11 @@ The poor overlay is fairly annoying.
 What about the ratio norm?
 
 
-```{r ratio_norm, fig.width=8, fig.height=8}
+```{r ratio_norm, fig.width=8, fig.height=8, comment=NA}
 ### ratio normalization
-
 dist.combo %>% 
   filter(any.vs.ada.ratio < 100) %>%  # this number was trial and error
-  ggplot(aes(x = any.long, y = any.lat, color = any.vs.ada.ratio)) +
+  ggplot(aes(x = longitude, y = latitude, color = any.vs.ada.ratio)) +
   geom_point(size = 0.2) +
   scale_color_viridis(option = "B") +
   theme(panel.background = element_rect(fill = 'grey50')) +
@@ -566,7 +560,7 @@ dist.combo %>%
     dist.combo %>% 
       filter(any.vs.ada.ratio < 10)
     ) %>% 
-  ggplot(aes(x = any.long, y = any.lat, color = any.vs.ada.ratio)) +
+  ggplot(aes(x = longitude, y = latitude, color = any.vs.ada.ratio)) +
   geom_point(size = 0.2) +
   scale_color_viridis(option = "B") +
   theme(panel.background = element_rect(fill = 'grey50')) +
