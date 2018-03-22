@@ -24,9 +24,18 @@ library(ggmap)
 library(cowplot)
 library(viridis)
 library(geosphere)
+library(rgdal)
 ```
 
 Not sure which are the most reliable datasets to use here. 
+
+```{r}
+test.map <- readOGR("../data/nyct2010_18a", "nyct2010")
+test.map2 <- fortify(test.map)
+ggplot(test.map2, aes(x = long, y = lat, group = group)) +
+  geom_polygon(fill = NA, color = "black")
+```
+
 
 ##Data import, cleanup, and some exploration
 
