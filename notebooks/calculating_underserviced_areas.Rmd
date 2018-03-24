@@ -25,16 +25,12 @@ library(cowplot)
 library(viridis)
 library(geosphere)
 library(rgdal)
+library(tmap)
 ```
 
 Not sure which are the most reliable datasets to use here. 
 
-```{r}
-test.map <- readOGR("../data/nyct2010_18a", "nyct2010")
-test.map2 <- fortify(test.map)
-ggplot(test.map2, aes(x = long, y = lat, group = group)) +
-  geom_polygon(fill = NA, color = "black")
-```
+
 
 
 ##Data import, cleanup, and some exploration
@@ -583,3 +579,46 @@ Next steps:
 - Separate distance calculations by borough for both the random point and the station, in case "closest" stations are across a river. Probably can keep Queens and Brooklyn together?
 - Incorporate outage data to find the "true" dead zones? Or areas that are usually suffering from long-term outages of accessibility equipment?
 - Find a better NYC map overlay - is it the 311 long,lat data that's the problem, or the map I got from ggmap? 
+
+
+```{r}
+test.map <- readOGR("../data/nyct2010_18a", "nyct2010")
+tm_shape(test.map) +
+  tm_borders() 
+test.map2 <- fortify(test.map)
+ggplot(test.map2, aes(x = long, y = lat, group = group)) +
+  geom_polygon(fill = NA, color = "black")
+test.map3 <- test.map[test.map$BoroName != "Staten Island", ]
+tm_shape(test.map3) +
+  tm_borders() 
+dist.points <- SpatialPoints(dist.combo[, 2:3])
+proj4string(dist.points) <- CRS("+init=epsg:4326")
+#proj4string(dist.points) <- CRS("+proj=lcc +lat_1=41.03333333333333 +lat_2=40.66666666666666 +lat_0=40.16666666666666 +lon_0=-74 +x_0=300000.0000000001 +y_0=0 +ellps=GRS80 +datum=NAD83 +to_meter=0.3048006096012192 +no_defs")
+plot(dist.points)
+dist.points <- spTransform(dist.points, proj4string(test.map3))
+dist.by.tract <- over(dist.points, test.map3)
+dist.by.tract.frt <- fortify(dist.by.tract)
+test4 <- dist.combo %>% 
+  bind_cols(dist.by.tract.frt)
+test5 <- test4 %>% 
+  group_by(CT2010) %>% 
+  summarize(avg_to_ada_stat = mean(any.vs.ada.dist))
+test6 <- test4 %>% 
+  group_by(NTAName) %>% 
+  summarize(avg_to_ada_stat = mean(any.vs.ada.dist)) %>% 
+  arrange(desc(avg_to_ada_stat))
+merge.to.map <- merge(test.map3, test5, by.x = "CT2010", by.y = "CT2010")
+merge.to.map2 <- merge.to.map
+merge.to.map2[str_detect(merge.to.map2$NTAName, "park-cemetery-etc") | str_detect(merge.to.map2$NTAName, "Airport"), ] <- NA
+tm_shape(merge.to.map2) +
+  tm_fill("avg_to_ada_stat", style = "fixed", breaks = c(0, 0.25, 0.5, 0.75, 1.25, 2.5, 5), palette = inferno(n = 6))
+merge.to.map.neigh <- merge(test.map3, test6, by.x = "NTAName", by.y = "NTAName")
+tm_shape(merge.to.map.neigh) +
+  tm_borders()+
+  tm_fill("avg_to_ada_stat", style = "fixed", breaks = c(0.25, 0.5, 0.75, 1, 2, 3, 4), palette = viridis(n = 6))
+
+sum(str_detect(merge.to.map$NTAName, "park-cemetery-etc"))
+merge.parks <- merge.to.map[str_detect(merge.to.map$NTAName, "park-cemetery-etc"),]
+tm_shape(merge.parks) +
+  tm_fill()
+```
